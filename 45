@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Project Zomboid Mini — Велика Версія</title>
+    <style>
+        body { margin:0; background:#000; font-family:Arial; overflow:hidden; color:white; }
+        canvas { image-rendering:pixelated; border:4px solid #222; display:block; margin:0 auto; }
+        #ui { position:absolute; top:10px; left:10px; background:rgba(0,0,0,0.75); padding:10px; border-radius:8px; min-width:220px; }
+        #inventory { position:absolute; bottom:10px; left:10px; background:rgba(0,0,0,0.8); padding:10px; border-radius:8px; max-height:300px; overflow-y:auto; }
+        #crafting { position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.85); padding:15px; border-radius:8px; width:280px; display:none; }
+        button { background:#333; color:white; border:none; padding:6px 12px; margin:3px; cursor:pointer; }
+        button:hover { background:#555; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        Здоров'я: <span id="health">100</span><br>
+        Голод: <span id="hunger">50</span><br>
+        Спрага: <span id="thirst">40</span><br>
+        День: <span id="day">1</span> | Вбито: <span id="kills">0</span>
+    </div>
+
+    <canvas id="game" width="1000" height="700"></canvas>
+
+    <div id="inventory">
+        <b>Інвентар (E)</b><br>
+        <div id="invItems"></div>
+    </div>
+
+    <div id="crafting">
+        <b>Крафт</b><br><br>
+        <button onclick="craft('plank')">Дошка (2 гілки)</button><br>
+        <button onclick="craft('nails')">Цвяхи (1 камінь + 1 залізо)</button><br>
+        <button onclick="craft('axe')">Сокира</button><br>
+        <button onclick="craft('spear')">Спис</button><br>
+        <button onclick="craft('wall')">Стіна</button><br><br>
+        <button onclick="toggleCraft()">Закрити</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        
+        let player = { x:500, y:350, size:18, speed:3.5, health:100, hunger:50, thirst:40, angle:0 };
+        let keys = {};
+        let zombies = [];
+        let bullets = [];
+        let itemsOnGround = [];
+        let buildings = [];
+        let score = 0, day = 1, gameOver = false;
+
+        let inventory = [
+            {name:"Сокира", type:"weapon", qty:1},
+            {name:"Гілка", type:"resource", qty:5},
+            {name:"Камінь", type:"resource", qty:3}
+        ];
+
+        const recipes = {
+            plank: { need: [{name:"Гілка", qty:2}], result: {name:"Дошка", qty:2} },
+            nails: { need: [{name:"Камінь", qty:1}, {name:"Залізо", qty:1}], result: {name:"Цвяхи", qty:4} },
+            axe: { need: [{name:"Дошка", qty:2}, {name:"Камінь", qty:1}], result: {name:"Сокира", qty:1} },
+            spear: { need: [{name:"Гілка", qty:3}, {name:"Камінь", qty:1}], result: {name:"Спис", qty:1} },
+            wall: { need: [{name:"Дошка", qty:4}, {name:"Цвяхи", qty:2}], result: {name:"Стіна", qty:1, isBuilding:true} }
+        };
+
+        function addToInv(name, qty) {
+            let found = inventory.find(i => i.name === name);
+            if (found) found.qty += qty;
+            else inventory.push({name, qty, type: name.includes("Сокира")||name.includes("Спис") ? "weapon" : "resource"});
+            updateInventory();
+        }
+
+        function updateInventory() {
+            let html = '';
+            inventory.forEach((item,i) => {
+                html += `${item.name} ×${item.qty} <button onclick="useItem(${i})">Використати</button><br>`;
+            });
+            document.getElementById('invItems').innerHTML = html;
+        }
+
+        function useItem(i) {
+            const item = inventory[i];
+            if (item.name === "Сокира" || item.name === "Спис") {
+                alert("Зброя готова! Натискай ЛКМ щоб атакувати");
+            }
+            // можна додати більше логіки
+        }
+
+        function craft(recipeName) {
+            const rec = recipes[recipeName];
+            let canCraft = true;
+            rec.need.forEach(need => {
+                let have = inventory.find(i => i.name === need.name);
+                if (!have || have.qty < need.qty) canCraft = false;
+            });
+            if (!canCraft) { alert("Недостатньо ресурсів!"); return; }
+
+            rec.need.forEach(need => {
+                let have = inventory.find(i => i.name === need.name);
+                have.qty -= need.qty;
+                if (have.qty <= 0) inventory.splice(inventory.indexOf(have),1);
+            });
+
+            if (rec.result.isBuilding) {
+                alert("Стіна створена! Натисни B і клікни на карту щоб поставити");
+            } else {
+                addToInv(rec.result.name, rec.result.qty);
+            }
+            updateInventory();
+        }
+
+        function toggleCraft() {
+            const c = document.getElementById('crafting');
+            c.style.display = c.style.display === 'block' ? 'none' : 'block';
+        }
+
+        // Спавн
+        function spawnZombie() {
+            const side = Math.floor(Math.random()*4);
+            let z = {x:0, y:0, size:22, speed:1.3 + day*0.1, health:60 + day*10};
+            if (side===0) { z.x = Math.random()*canvas.width; z.y = -40; }
+            else if (side===1) { z.x = canvas.width+40; z.y = Math.random()*canvas.height; }
+            else if (side===2) { z.x = Math.random()*canvas.width; z.y = canvas.height+40; }
+            else { z.x = -40; z.y = Math.random()*canvas.height; }
+            zombies.push(z);
+        }
+
+        function dropLoot(x,y) {
+            if (Math.random()<0.6) itemsOnGround.push({x,y,name:"Гілка",qty:Math.floor(Math.random()*3)+1});
+            if (Math.random()<0.4) itemsOnGround.push({x,y,name:"Камінь",qty:1});
+            if (Math.random()<0.15) itemsOnGround.push({x,y,name:"Залізо",qty:1});
+        }
+
+        // Керування
+        window.addEventListener('keydown', e => {
+            keys[e.key.toLowerCase()] = true;
+            if (e.key === 'e' || e.key === 'E') updateInventory();
+            if (e.key === 'c' || e.key === 'C') toggleCraft();
+            if (e.key === 'b' || e.key === 'B') {
+                alert("Режим будівництва. Клікни ЛКМ на карту щоб поставити стіну (якщо є в інвентарі)");
+            }
+        });
+        window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            player.angle = Math.atan2(e.clientY - rect.top - player.y, e.clientX - rect.left - player.x);
+        });
+
+        canvas.addEventListener('click', e => {
+            if (gameOver) return;
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+
+            // Будівництво
+            if (keys['b'] || keys['B']) {
+                let wall = inventory.find(i => i.name === "Стіна");
+                if (wall && wall.qty > 0) {
+                    buildings.push({x: Math.floor(mx/40)*40, y: Math.floor(my/40)*40, type:"wall"});
+                    wall.qty--;
+                    if (wall.qty <= 0) inventory.splice(inventory.indexOf(wall),1);
+                    updateInventory();
+                    return;
+                }
+            }
+
+            // Атака / постріл
+            const weapon = inventory.find(i => i.name === "Сокира" || i.name === "Спис");
+            if (weapon) {
+                // ближній бій
+                zombies.forEach((z,i) => {
+                    const dx = z.x - player.x;
+                    const dy = z.y - player.y;
+                    if (Math.sqrt(dx*dx + dy*dy) < 60) {
+                        z.health -= weapon.name === "Сокира" ? 45 : 30;
+                        if (z.health <= 0) {
+                            zombies.splice(i,1);
+                            score++;
+                            dropLoot(z.x, z.y);
+                        }
+                    }
+                });
+            } else {
+                // звичайна куля
+                bullets.push({
+                    x: player.x, y: player.y,
+                    vx: Math.cos(player.angle)*14,
+                    vy: Math.sin(player.angle)*14,
+                    life: 40
+                });
+            }
+        });
+
+        function update() {
+            if (gameOver) return;
+
+            // Рух
+            if (keys['w']||keys['arrowup']) player.y -= player.speed;
+            if (keys['s']||keys['arrowdown']) player.y += player.speed;
+            if (keys['a']||keys['arrowleft']) player.x -= player.speed;
+            if (keys['d']||keys['arrowright']) player.x += player.speed;
+
+            player.x = Math.max(30, Math.min(canvas.width-30, player.x));
+            player.y = Math.max(30, Math.min(canvas.height-30, player.y));
+
+            // Статус
+            player.hunger += 0.008;
+            player.thirst += 0.012;
+            if (player.hunger > 100 || player.thirst > 100) player.health -= 0.1;
+
+            if (player.health <= 0) {
+                gameOver = true;
+                document.getElementById('gameOver').style.display = 'block';
+            }
+
+            // Зомбі
+            for (let i = zombies.length-1; i >= 0; i--) {
+                let z = zombies[i];
+                const dx = player.x - z.x;
+                const dy = player.y - z.y;
+                const dist = Math.hypot(dx, dy) || 1;
+                z.x += dx/dist * z.speed;
+                z.y += dy/dist * z.speed;
+
+                if (dist < player.size + z.size) player.health -= 0.4;
+
+                // Кулі
+                for (let j = bullets.length-1; j >= 0; j--) {
+                    let b = bullets[j];
+                    if (Math.hypot(b.x - z.x, b.y - z.y) < z.size + 6) {
+                        z.health -= 35;
+                        bullets.splice(j,1);
+                    }
+                }
+                if (z.health <= 0) {
+                    zombies.splice(i,1);
+                    score++;
+                    dropLoot(z.x, z.y);
+                }
+            }
+
+            // Кулі
+            for (let i = bullets.length-1; i >= 0; i--) {
+                let b = bullets[i];
+                b.x += b.vx; b.y += b.vy; b.life--;
+                if (b.life <= 0) bullets.splice(i,1);
+            }
+
+            // Спавн
+            if (Math.random() < 0.04 + day*0.008) spawnZombie();
+
+            // День
+            if (score > day * 12) {
+                day++;
+                document.getElementById('day').textContent = day;
+                for (let i=0; i<5; i++) spawnZombie();
+            }
+
+            document.getElementById('health').textContent = Math.floor(player.health);
+            document.getElementById('hunger').textContent = Math.floor(player.hunger);
+            document.getElementById('thirst').textContent = Math.floor(player.thirst);
+            document.getElementById('kills').textContent = score;
+        }
+
+        function draw() {
+            ctx.fillStyle = '#1a3a1a';
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+
+            // Тайли
+            ctx.strokeStyle = '#0f2a0f';
+            for (let x=0; x<canvas.width; x+=40) {
+                ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+            }
+            for (let y=0; y<canvas.height; y+=40) {
+                ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
+            }
+
+            // Будівлі
+            ctx.fillStyle = '#555';
+            for (let b of buildings) {
+                ctx.fillRect(b.x, b.y, 40, 40);
+            }
+
+            // Предмети на землі
+            ctx.fillStyle = '#ffcc00';
+            for (let it of itemsOnGround) {
+                ctx.fillRect(it.x-8, it.y-8, 16, 16);
+            }
+
+            // Гравець
+            ctx.save();
+            ctx.translate(player.x, player.y);
+            ctx.rotate(player.angle);
+            ctx.fillStyle = '#44aaff';
+            ctx.fillRect(-12, -12, 24, 24);
+            ctx.fillStyle = '#ddd';
+            ctx.fillRect(10, -4, 20, 8);
+            ctx.restore();
+
+            // Зомбі
+            ctx.fillStyle = '#2a802a';
+            for (let z of zombies) {
+                ctx.beginPath();
+                ctx.arc(z.x, z.y, z.size, 0, Math.PI*2);
+                ctx.fill();
+            }
+
+            // Кулі
+            ctx.fillStyle = '#ffee00';
+            for (let b of bullets) ctx.fillRect(b.x-3, b.y-3, 6, 6);
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Початок
+        for (let i = 0; i < 8; i++) spawnZombie();
+        updateInventory();
+        gameLoop();
+
+        // Game Over екран
+        const go = document.createElement('div');
+        go.id = 'gameOver';
+        go.style.position = 'absolute';
+        go.style.top = '50%';
+        go.style.left = '50%';
+        go.style.transform = 'translate(-50%,-50%)';
+        go.style.fontSize = '70px';
+        go.style.color = 'red';
+        go.style.display = 'none';
+        go.innerHTML = `ТИ ПОМЕР<br><button onclick="location.reload()" style="font-size:30px;padding:15px 30px;">ГРАТИ ЗАНОВО</button>`;
+        document.body.appendChild(go);
+    </script>
+</body>
+</html>
